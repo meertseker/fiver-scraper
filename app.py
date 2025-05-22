@@ -18,28 +18,45 @@ chrome_options = webdriver.ChromeOptions()
 chrome_options.add_argument("--disable-blink-features=AutomationControlled")
 chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
 chrome_options.add_experimental_option('useAutomationExtension', False)
-# Set random user-agent
+# Enhanced anti-detection
 chrome_options.add_argument(f"user-agent={ua.random}")
-# Additional anti-detection options
 chrome_options.add_argument("--disable-infobars")
 chrome_options.add_argument("--disable-notifications")
 chrome_options.add_argument("--start-maximized")
-chrome_options.add_argument("--disable-gpu")  # Sometimes helps with detection
-chrome_options.add_argument("--log-level=3")  # Suppress verbose logs
+chrome_options.add_argument("--disable-gpu")
+chrome_options.add_argument("--log-level=3")
+# Add browser-like preferences
+chrome_options.add_experimental_option("prefs", {
+    "profile.default_content_setting_values.notifications": 2,
+    "profile.default_content_settings.popups": 0
+})
 
 # Initialize the driver with error handling
 try:
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
     # Hide automation flags
-    driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+    driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+        "source": """
+            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+            window.navigator.chrome = { runtime: {} };
+            Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3]});
+            Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+        """
+    })
 except Exception as e:
-    print(f"Error with ChromeDriverManager: {e}")
     print("Trying alternative method...")
     try:
         chromedriver_path = os.path.join(os.getcwd(), "chromedriver.exe")
         if os.path.exists(chromedriver_path):
             driver = webdriver.Chrome(service=Service(chromedriver_path), options=chrome_options)
-            driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+            driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+                "source": """
+                    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                    window.navigator.chrome = { runtime: {} };
+                    Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3]});
+                    Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+                """
+            })
         else:
             raise FileNotFoundError("chromedriver.exe not found in script directory")
     except Exception as e2:
@@ -56,24 +73,31 @@ def scrape_gig_details(driver, link):
     try:
         driver.get(link)
         print(f"\nVisiting gig page: {link}")
-        # Random delay to mimic human behavior
-        time.sleep(random.uniform(2, 4))
-        # Scroll to mimic human interaction
-        driver.execute_script("window.scrollTo(0, document.body.scrollHeight / 2);")
+        time.sleep(random.uniform(2, 4))  # Random delay
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight / 2);")  # Scroll
         time.sleep(random.uniform(0.5, 1.5))
 
-        # Check for bot detection page
+        # Check for CAPTCHA page
         try:
-            if "human touch" in driver.page_source.lower():
-                print("Bot detection triggered. Saving page source for debugging...")
-                with open("bot_detection.html", "w", encoding="utf-8") as f:
+            if driver.find_elements(By.ID, "px-captcha") or "human touch" in driver.page_source.lower():
+                print("CAPTCHA detected. Please solve the CAPTCHA manually in the browser.")
+                with open("captcha_page.html", "w", encoding="utf-8") as f:
                     f.write(driver.page_source)
-                return {
-                    "link": link,
-                    "title": "Bot detection triggered",
-                    "price": "Not found",
-                    "rating": "Not found"
-                }
+                print("CAPTCHA page saved to captcha_page.html")
+                # Wait for manual CAPTCHA solving
+                try:
+                    WebDriverWait(driver, 30).until(
+                        EC.invisibility_of_element_located((By.ID, "px-captcha"))
+                    )
+                    print("CAPTCHA solved, continuing...")
+                except:
+                    print("CAPTCHA not solved within 30 seconds.")
+                    return {
+                        "link": link,
+                        "title": "CAPTCHA required",
+                        "price": "Not found",
+                        "rating": "Not found"
+                    }
         except:
             pass
 
@@ -135,7 +159,6 @@ def scrape_gig_details(driver, link):
             except:
                 continue
 
-        # Return scraped details
         return {
             "link": link,
             "title": title if title and "human touch" not in title.lower() else "Not found",
@@ -157,16 +180,14 @@ url = "https://www.fiverr.com/search/gigs?query=website&source=top-bar&search_in
 try:
     driver.get(url)
     print("Loading Fiverr search page...")
-    time.sleep(random.uniform(4, 6))  # Random delay
-
-    # Scroll to mimic human behavior
+    time.sleep(random.uniform(4, 6))
     driver.execute_script("window.scrollTo(0, 500);")
     time.sleep(random.uniform(1, 2))
 
     # Accept cookies if popup appears
     try:
         cookie_accept = WebDriverWait(driver, 10).until(
-            EC.element_to_be_clickable((By.XPATH, '//button[contains(text(), "Accept") or contains(text(), "Agree ")]')))
+            EC.element_to_be_clickable((By.XPATH, '//button[contains(text(), "Accept") or contains(text(), " Agree ")]')))
         cookie_accept.click()
         print("Accepted cookies")
     except:
@@ -191,7 +212,7 @@ try:
             gigs = driver.find_elements(By.CSS_SELECTOR, selector)
             if gigs:
                 print(f"Found {len(gigs)} gigs using selector: {selector}")
-                for i, gig in enumerate(gigs[:5]):  # Limit to first 5 gigs
+                for i, gig in enumerate(gigs[:5]):
                     try:
                         link_elem = gig.find_element(By.TAG_NAME, "a")
                         link = link_elem.get_attribute("href")
